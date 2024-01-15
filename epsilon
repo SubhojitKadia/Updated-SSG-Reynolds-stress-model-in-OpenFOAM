@@ -1,0 +1,158 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  dev
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      epsilon;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 2 -3 0 0 0 0]; // turbulent kinetic energy dissipation rate in m^2/s^3
+
+internalField   uniform 0.00506;
+
+boundaryField
+{
+    #includeEtc "caseDicts/setConstraintTypes"
+
+    lowerWall
+    {
+        type            epsilonWallFunction;
+        value           uniform 0.00506;
+    }
+
+    topSurface
+    {
+		type            codedFixedValue;//changing with kf and the distance from the nearest wall y_2
+		patchType		symmetryPlane;
+		value           uniform 0.00506;
+		name		    myEpsilonFS;// Name of generated boundary condition, previously directType
+		
+		code // applicable for half width of a channel
+		#{
+			const volScalarField& eps = this->db().lookupObject<volScalarField>("epsilon");
+			const fvMesh& mesh = eps.mesh();
+			const dimensionedScalar h = max(mesh.Cf().component(1));//flow depth in m
+			const dimensionedScalar b = 2.0*max(mag(mesh.Cf().component(2))); // channel's maximum width in m. half channel width is simulated along the -z direction
+			
+			// Top width of the channel
+			const dimensionedScalar bt = b;// top width of the flow area, if the channel filling is lower than the maximum width
+			// or
+		    //const dimensionedScalar bt = 0.866*b;// top width of the flow area, if the channel filling is at the 3/4ths of the circle
+			//
+			
+			// Bottom width of the channel bb
+			const dimensionedScalar bb = b; // for archway cases
+			//or
+			//const dimensionedScalar bb = 0.6*b; // for circular cases
+			//or
+			//const dimensionedScalar bb = 0.8333*b; // for horseshoe cases
+			//
+			
+			const fvPatch& boundaryPatch = this->patch();
+			const vectorField& Cf = boundaryPatch.Cf();// face center coordinates for the patch
+			const fvPatchSymmTensorField& Rp = boundaryPatch.lookupPatchField<volSymmTensorField, symmTensor>("R");// calling R for the patch
+			fvPatchScalarField& epsilon = *this;
+			
+			const label& leftBoundary = mesh.boundary().findPatchID("leftWall");
+			const fvPatch& leftBoundaryPatch = mesh.boundary()[leftBoundary];
+			const vectorField& Cf1 = leftBoundaryPatch.Cf();
+			const scalar nn = leftBoundaryPatch.size();// from 0 to nn-1
+			
+			forAll(Cf, facei)
+			{
+				scalar zf = Cf[facei].component(2);// lateral coordinate of the face center
+				scalar yf = Cf[facei].component(1);// vertical coordinate of the face center
+				scalar h1 = h.value();
+				scalar b1 = bt.value();
+				scalar y_1 = 0.07*h1;
+				scalar z_1 = 0.5*b1 - mag(zf);// horizontal distance between the mixed corner and the cell face center 
+				//initialisation
+				scalar z_2 = 0.0;
+				scalar y_2 = 0.0;
+				scalar z_2_next = 0.0;
+				scalar y_2_next = 0.0;
+				scalar sqrDist = 0.0;
+				scalar deltaTheta = 0.0;
+				scalar kf = 0.5*tr(Rp[facei]);// turbulent kinetic energy at the facei
+				if (z_1 <= h1) //nearest wall is the left (curved or linear) wall
+				{
+					scalar sum1 = 0.0;
+					forAll(Cf1, ii)
+					{
+						z_2 = zf - Cf1[ii].component(2); // lateral distance
+						y_2 = yf - Cf1[ii].component(1); // vertical distance
+						if(ii <= nn-2) // face number starts (at 0) from the face close to the solid corner
+						{
+							scalar jj = ii+1;
+							z_2_next = zf - Cf1[jj].component(2); // lateral distance
+							y_2_next = yf - Cf1[jj].component(1); // vertical distance
+							if(z_2 < 0.0 && z_2_next > 0.0)
+							{						
+								deltaTheta = atan(mag(z_2_next)/y_2_next) + atan(mag(z_2)/y_2);
+							}
+							else
+							{
+								deltaTheta = mag(atan(mag(z_2_next)/y_2_next)- atan(mag(z_2)/y_2));
+							}
+							sqrDist = sqr(y_2_next) + sqr(z_2_next);
+						}
+						else // for the face closest to the mixed corner
+						{
+							deltaTheta = atan(y_2/mag(z_2));
+							sqrDist = sqr(z_2_next);
+						}
+						sum1 += deltaTheta/sqrDist;
+					}
+					scalar y_3 = sqrt(1.0/(2.0*sum1/constant::mathematical::pi));
+					epsilon[facei] = 0.401*pow(kf, 1.5)*(1.0/y_1 + 1.0/y_3);
+				}
+				else //nearest wall is the bed
+				{
+					scalar z_3 = 0.5*bb.value() - mag(zf); // horizontal distance between the left solid corner and the face centre 
+					scalar z_4 = bb.value() - z_3; // horizontal distance between the face centre and the right solid corner 
+					scalar y_3 = sqrt((constant::mathematical::pi*sqr(h1))/(atan(z_4/h1) + atan(z_3/h1) + 1.0/(h1/z_4 + z_4/h1) + 1.0/(h1/z_3 + z_3/h1)));
+					epsilon[facei] = 0.401*pow(kf, 1.5)*(1.0/y_1 + 1.0/y_3);
+				}
+			}
+			// epsilon (free surface) = 0.401*k(free surface)^3/2*(1/y'+1/y*); // Naot and Rodi (1982), Cmu^0.75/kappa = 0.401;
+		#};
+
+		codeOptions
+			#{
+				-I$(LIB_SRC)/finiteVolume/lnInclude\
+				-I$(LIB_SRC)/meshTools/lnInclude\
+			#};
+			
+		codeInclude
+			#{
+				#include "fvCFD.H"
+				#include <cmath>
+				#include <iostream>
+			#};
+			
+		codeLibs 
+			#{ -lfiniteVolume -lmeshTools 
+			#};
+	}
+    leftWall
+    {
+		type            epsilonWallFunction;
+        value           uniform 0.00506;
+    }
+	
+	rightSymmetry
+    {
+        type            symmetryPlane;
+    }
+}
+
+
+// ************************************************************************* //
