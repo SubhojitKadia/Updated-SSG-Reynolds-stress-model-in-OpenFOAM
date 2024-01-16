@@ -6,7 +6,7 @@ The available SSG model in OpenFOAM does not include the non-linear free surface
 damping functions and dissipation rate boundary condition, which are needed
 to simulate turbulence-driven secondary currents. 
 Therefore, these functions were added in the modified SSG model or SSGMod based 
-on the literature and validated for a supecritical uniform case with 
+on the literature and validated for a supercritical uniform case with 
 rectangular cross-section before studying the effect of numerous cross-sectional 
 geometries on narrow channel flows comparable to sediment bypass tunnels.  
 
